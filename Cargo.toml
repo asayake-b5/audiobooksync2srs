@@ -1,0 +1,19 @@
+[package]
+name = "audiobook2srs"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+encoding_rs = "0.8.33"
+encoding_rs_io = "0.1.7"
+ffmpeg-cli = "0.1.0"
+futures-util = "0.3.30"
+genanki-rs = "0.4.0"
+rayon = "1.8.1"
+regex = "1.10.3"
+relm4 = "0.6.2"
+relm4-components = "0.6.2"
+srtlib = "0.1.7"
+tokio = "1.36.0"
