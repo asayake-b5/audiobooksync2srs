@@ -80,10 +80,14 @@ fn prepare_ffmpeg_command(
     let mut r = Vec::with_capacity(count * 10);
     for i in 0..count {
         let n = start + i;
+        // if s.len() != 25 {
+        //     dbg!(n);
+        // }
         let path_str = format!("{path}/{prefix}-{n}.mp3");
         let path = PathBuf::from(&path_str);
         if path.exists() {
             //TODO check if file is 0bytes
+            // dbg!(n);
             continue;
         }
         if s[i].start_time >= s[i].end_time {
@@ -106,6 +110,7 @@ fn prepare_ffmpeg_command(
     r
 }
 
+#[derive(Debug)]
 pub struct MyArgs {
     pub audiobook: PathBuf,
     pub subtitle: PathBuf,
@@ -143,7 +148,7 @@ pub fn process(args: MyArgs, thread_tx: Sender<String>) {
     //     }
     // });
 
-    let mut subs = Subtitles::parse_from_file(args.subtitle, Some("utf8"))
+    let mut subs = Subtitles::parse_from_file(&args.subtitle, Some("utf8"))
         .unwrap()
         .to_vec();
 
@@ -173,7 +178,7 @@ pub fn process(args: MyArgs, thread_tx: Sender<String>) {
         // .par_chunks()
         .for_each(move |(i, s)| {
             let size = s.len();
-            let prepared = prepare_ffmpeg_command(i * size, size, s, &path, &args.prefix);
+            let prepared = prepare_ffmpeg_command(i * CHUNK_SIZE, size, s, &path, &args.prefix);
             if !contin.load(Ordering::Relaxed) {
                 return;
             }
@@ -197,7 +202,8 @@ pub fn process(args: MyArgs, thread_tx: Sender<String>) {
             .chain(prepared.iter())
             .cloned()
             .collect();
-            command.args(&args).output().unwrap();
+            let child = command.args(&args).output().unwrap();
+            // dbg!(child);
             n.fetch_add(size, std::sync::atomic::Ordering::Relaxed);
             thread_tx.send(format!("{n:?}/{m} completed!\n")).unwrap();
         })

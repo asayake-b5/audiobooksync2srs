@@ -1,22 +1,9 @@
-use encoding_rs_io::DecodeReaderBytes;
-use futures_util::StreamExt;
 use genanki_rs::{Deck, Field, Model, Note, Package, Template};
-use regex::Regex;
 use srtlib::Subtitles;
-use std::{
-    ffi::CString,
-    future::ready,
-    io::{BufRead, BufReader, Read, Stdout},
-    net::TcpListener,
-    path::PathBuf,
-    process::{Command, Stdio},
-    sync::mpsc::{self, Receiver, Sender},
-    thread,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::{convert::identity, path::PathBuf};
+use worker::{AsyncHandler, AsyncHandlerInMsg};
 
 use converter::MyArgs;
-use ffmpeg_cli::{FfmpegBuilder, Parameter};
 use relm4::{
     gtk::{
         self,
@@ -27,7 +14,7 @@ use relm4::{
         Adjustment, EntryBuffer, FileFilter,
     },
     Component, ComponentController, ComponentParts, ComponentSender, Controller, RelmApp,
-    RelmWidgetExt, SimpleComponent,
+    RelmWidgetExt, SimpleComponent, WorkerController,
 };
 use relm4_components::{
     open_button::{OpenButton, OpenButtonSettings},
@@ -35,6 +22,7 @@ use relm4_components::{
 };
 
 mod converter;
+mod worker;
 
 #[derive(Debug, Eq, PartialEq)]
 enum ImageMode {
@@ -43,7 +31,7 @@ enum ImageMode {
     Custom,
 }
 
-#[derive(Debug)]
+// #[derive(Debug)]
 struct AppModel {
     open_srt: Controller<OpenButton>,
     srt_path: PathBuf,
@@ -56,6 +44,7 @@ struct AppModel {
     offset_before: f64,
     offset_after: f64,
     show_button: bool,
+    worker: WorkerController<AsyncHandler>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -77,13 +66,16 @@ enum OffsetDirection {
 }
 
 #[derive(Debug)]
-enum AppInMsg {
-    UpdateBuffer(String),
+pub enum AppInMsg {
+    UpdateBuffer(String, bool),
     SetImageMode(ImageMode),
     Recheck,
     UpdateOffset(OffsetDirection, f64),
     Start,
     Open(PathBuf, DialogOrigin),
+    StartConversion,
+    StartAudioSplit,
+    StartGenDeck,
 }
 
 #[derive(Debug)]
@@ -164,6 +156,9 @@ impl SimpleComponent for AppModel {
             show_button: false,
             offset_before: 0.0,
             offset_after: 0.0,
+            worker: AsyncHandler::builder()
+                .detach_worker(())
+                .forward(sender.input_sender(), identity),
         };
 
         let widgets = view_output!();
@@ -173,201 +168,52 @@ impl SimpleComponent for AppModel {
 
     fn update(&mut self, msg: Self::Input, sender: ComponentSender<Self>) {
         match msg {
-            AppInMsg::UpdateBuffer(msg) => {
-                let (mut start, mut end) = self.buffer.bounds();
-                self.buffer.delete(&mut start, &mut end);
+            AppInMsg::UpdateBuffer(msg, delete) => {
+                if delete {
+                    let (mut start, mut end) = self.buffer.bounds();
+                    self.buffer.delete(&mut start, &mut end);
+                }
                 self.buffer.insert_at_cursor(&msg);
             }
             AppInMsg::SetImageMode(mode) => {
                 self.image = mode;
             }
-            AppInMsg::Start => {
-                let mut args = MyArgs {
+            AppInMsg::StartConversion => {
+                self.worker
+                    .emit(AsyncHandlerInMsg::ConvertMP3(self.audio_path.clone()));
+            }
+            AppInMsg::StartAudioSplit => {
+                let args = MyArgs {
                     prefix: self.prefix.text().to_string().replace(' ', "_"),
                     audiobook: self.audio_path.clone(),
                     subtitle: self.srt_path.clone(),
                     start_offset: self.offset_before as i32,
                     end_offset: self.offset_after as i32,
                 };
+                self.worker
+                    .emit(AsyncHandlerInMsg::SplitAudio(args, self.audio_path.clone()))
+            }
 
-                // let regex = Regex::new(r"size=.* time=(.*?) .* speed=(.*x)").unwrap();
+            AppInMsg::StartGenDeck => self.worker.emit(AsyncHandlerInMsg::GenDeck(
+                self.prefix.text().to_string(),
+                self.srt_path.clone(),
+            )),
 
-                // if self.image == ImageMode::Extract {
-                //     let mut command = if cfg!(unix) {
-                //         Command::new("ffmpeg")
-                //     } else if cfg!(windows) {
-                //         Command::new("ffmpeg.exe")
-                //     } else {
-                //         panic!("Unsupported OS possibly.")
-                //     };
-                //     command.args([
-                //         "-y",
-                //         "-i",
-                //         &self.audio_path.as_os_str().to_str().unwrap_or(""),
-                //         "-an",
-                //         "-vcodec",
-                //         "copy",
-                //         "cover.jpg",
-                //     ]);
-                //     self.buffer.insert_at_cursor("Creating cover file..");
-                //     let child = command.output().unwrap();
-                //     self.buffer.insert_at_cursor("Done!");
-                //     // sender.output(AppOutMsg::Scroll).unwrap();
-                // }
-                // let (tx, rx): (Sender<String>, Receiver<String>) = mpsc::channel();
-                // let thread_tx = tx.clone();
-
-                // if self.audio_ext == Some(AudioExt::M4b) {
-                //     let mut converted_path = self.audio_path.clone();
-                //     converted_path.set_extension("mp3");
-                //     self.buffer
-                //         .insert_at_cursor("Converting to mp3, this'll take a few minutes..");
-                //     let mut command = if cfg!(unix) {
-                //         Command::new("ffmpeg")
-                //     } else if cfg!(windows) {
-                //         Command::new("ffmpeg.exe")
-                //     } else {
-                //         panic!("Unsupported OS possibly.")
-                //     };
-                //     command.stdout(Stdio::piped()).stderr(Stdio::piped()).args([
-                //         "-stats",
-                //         "-v",
-                //         "quiet",
-                //         "-n", //TODO reeeeeeeeeeemove someday
-                //         "-y",
-                //         "-i",
-                //         &self.audio_path.as_os_str().to_str().unwrap_or(""),
-                //         "-vn",
-                //         "-acodec",
-                //         "libmp3lame",
-                //         &converted_path.as_os_str().to_str().unwrap_or(""),
-                //     ]);
-                //     let mut child = command.spawn().unwrap();
-                //     let mut stderr = child.stderr.take().unwrap();
-
-                //     let (tx, rx): (Sender<String>, Receiver<String>) = mpsc::channel();
-                //     thread::spawn(move || loop {
-                //         let mut buf = [0; 80];
-                //         match stderr.read(&mut buf) {
-                //             Err(err) => {
-                //                 println!("{}] Error reading from stream: {}", line!(), err);
-                //                 break;
-                //             }
-                //             Ok(got) => {
-                //                 if got == 0 {
-                //                     tx.send(String::from("STOP")).unwrap();
-                //                     break;
-                //                 } else {
-                //                     let str = String::from_utf8_lossy(&buf);
-                //                     let str = regex.replace_all(&str, "Converting... $1 - $2");
-                //                     let str = str.trim_end_matches('\0');
-                //                     let str = str.trim_end_matches('\r');
-                //                     tx.send(str.to_string()).unwrap();
-                //                 }
-                //             }
-                //         }
-                //     });
-
-                //     let sender2 = sender.clone();
-                //     thread::spawn(move || loop {
-                //         if let Ok(msg) = rx.recv() {
-                //             if msg == "STOP" {
-                //                 sender2.input(AppInMsg::UpdateBuffer(String::from(
-                //                     "Converting Done!",
-                //                 )));
-                //                 break;
-                //             } else {
-                //                 sender2.input(AppInMsg::UpdateBuffer(msg));
-                //             }
-                //         }
-                //     });
-                // }
-                // //TODO await here, otherewise spawn goes before end of convert
-
-                // if self.audio_ext == Some(AudioExt::M4b) {
-                //     let mut converted_path = self.audio_path.clone();
-                //     converted_path.set_extension("mp3");
-                //     args.audiobook = converted_path;
-                // };
-                // thread::spawn(move || {
-                //     converter::process(args, thread_tx.clone());
-                //     thread_tx.send(String::from("STOP")).unwrap();
-                // });
-                // let sender2 = sender.clone();
-                // //TODO PROPER ASYNC
-                // let mut wait = true;
-                // thread::spawn(move || loop {
-                //     if let Ok(msg) = rx.recv() {
-                //         if msg == "STOP" {
-                //             sender2.input(AppInMsg::UpdateBuffer(String::from(
-                //                 "Extracting audio files done!",
-                //             )));
-                //             wait = false;
-                //             break;
-                //         } else {
-                //             // self.buffer.insert_at_cursor(&msg);
-                //             sender2.input(AppInMsg::UpdateBuffer(msg));
-                //         }
-                //     }
-                // });
+            AppInMsg::Start => {
+                match self.image {
+                    ImageMode::Extract => {
+                        self.worker.emit(AsyncHandlerInMsg::GenImage(
+                            self.audio_path.clone(),
+                            self.prefix.text().to_string(),
+                        ));
+                    }
+                    _ => {
+                        sender.input(AppInMsg::StartConversion);
+                    } // ImageMode::None => todo!(),
+                      // ImageMode::Custom => todo!(),
+                };
 
                 //TODO handle custom cover file
-
-                let model = Model::new(
-                    170655988708,
-                    "audiobook2srs",
-                    vec![
-                        Field::new("Audio"),
-                        Field::new("Image"),
-                        Field::new("Sentence"),
-                    ],
-                    vec![Template::new("Card 1")
-                        .qfmt("{{Sentence}}")
-                        .afmt(r#"{{FrontSide}}<hr id="answer">{{Audio}} {Image}"#)],
-                );
-                let now = SystemTime::now();
-                let timestamp = now.duration_since(UNIX_EPOCH).unwrap().as_millis();
-                let mut deck = Deck::new(
-                    timestamp as i64,
-                    &self.prefix.text(),
-                    &format!(
-                        "{} - Generated by https://github.com/asayake-b5/audiobook2srs",
-                        &self.prefix.text()
-                    ),
-                );
-
-                let subs = Subtitles::parse_from_file(&self.srt_path, Some("utf8"))
-                    .unwrap()
-                    .to_vec();
-
-                let mut files: Vec<String> = Vec::with_capacity(subs.len() + 100);
-
-                // subs.sort();
-
-                for sub in subs {
-                    files.push(format!(
-                        "./gen/{}/{}-{}.mp3",
-                        &self.prefix, &self.prefix, sub.num
-                    ));
-                    deck.add_note(
-                        Note::new(
-                            model.clone(),
-                            vec![
-                                &format!("[sound:{}-{}.mp3]", self.prefix, sub.num),
-                                "",
-                                &sub.text,
-                            ],
-                        )
-                        .unwrap(),
-                    );
-                }
-
-                let files2: Vec<&str> = files.iter().map(|s| &**s).collect();
-                let mut package = Package::new(vec![deck], files2).unwrap();
-                package
-                    .write_to_file(&format!("{}.apkg", self.prefix))
-                    .unwrap();
-                sender.input(AppInMsg::UpdateBuffer(String::from("Done!")));
             }
             AppInMsg::UpdateOffset(dir, val) => match dir {
                 OffsetDirection::Before => {
@@ -607,25 +453,3 @@ fn main() {
     let app = RelmApp::new("relm4.test.simple");
     app.run::<AppModel>(0);
 }
-
-// let mut command = if cfg!(unix) {
-//     Command::new("ffmpeg")
-// } else if cfg!(windows) {
-//     Command::new("ffmpeg.exe")
-// } else {
-//     panic!("Unsupported OS possibly.")
-// };
-// command.stdout(Stdio::piped()).stderr(Stdio::piped()).args([
-//     // "-progress",
-//     // &prog_url,
-//     "-y",
-//     "-i",
-//     "adachi3.mp3",
-//     "-vn",
-//     "-acodec",
-//     // "libmp3lame",
-//     "copy",
-//     "output.mp3",
-// ]);
-// let mut child = command.spawn().unwrap();
-// let mut stderr = child.stderr.take().unwrap();
