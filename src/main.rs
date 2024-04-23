@@ -45,6 +45,7 @@ struct AppModel {
     offset_after: f64,
     show_button: bool,
     worker: WorkerController<AsyncHandler>,
+    sensitive: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -76,6 +77,7 @@ pub enum AppInMsg {
     StartConversion,
     StartAudioSplit,
     StartGenDeck,
+    Ended,
 }
 
 #[derive(Debug)]
@@ -145,6 +147,7 @@ impl SimpleComponent for AppModel {
             });
 
         let model = AppModel {
+            sensitive: true,
             prefix: EntryBuffer::new(Some("MyAudiobook")),
             open_srt,
             open_audio,
@@ -168,6 +171,9 @@ impl SimpleComponent for AppModel {
 
     fn update(&mut self, msg: Self::Input, sender: ComponentSender<Self>) {
         match msg {
+            AppInMsg::Ended => {
+                self.sensitive = true;
+            }
             AppInMsg::UpdateBuffer(msg, delete) => {
                 if delete {
                     let (mut start, mut end) = self.buffer.bounds();
@@ -195,11 +201,13 @@ impl SimpleComponent for AppModel {
             }
 
             AppInMsg::StartGenDeck => self.worker.emit(AsyncHandlerInMsg::GenDeck(
-                self.prefix.text().to_string(),
+                self.prefix.text().to_string().replace(' ', "_"),
                 self.srt_path.clone(),
+                self.image == ImageMode::Extract
             )),
 
             AppInMsg::Start => {
+                self.sensitive = false;
                 match self.image {
                     ImageMode::Extract => {
                         self.worker.emit(AsyncHandlerInMsg::GenImage(
@@ -210,7 +218,7 @@ impl SimpleComponent for AppModel {
                     _ => {
                         sender.input(AppInMsg::StartConversion);
                     } // ImageMode::None => todo!(),
-                      // ImageMode::Custom => todo!(),
+                    // ImageMode::Custom => todo!(),
                 };
 
                 //TODO handle custom cover file
@@ -249,7 +257,7 @@ impl SimpleComponent for AppModel {
 
     view! {
         gtk::Window {
-            set_title: Some("Audiobook to Ren'py"),
+            set_title: Some("Audiobook to Anki"),
             set_default_width: 600,
             set_default_height: 400,
 
@@ -259,6 +267,9 @@ impl SimpleComponent for AppModel {
                 set_margin_all: 5,
 
                 gtk::Box {
+                    #[watch]
+                    set_sensitive: model.sensitive,
+
                     set_spacing: 5,
                     set_margin_all: 5,
                     set_orientation: gtk::Orientation::Horizontal,
@@ -275,6 +286,8 @@ impl SimpleComponent for AppModel {
 
 
                 gtk::Box {
+                    #[watch]
+                    set_sensitive: model.sensitive,
                     set_spacing: 5,
                     set_margin_all: 5,
                     set_orientation: gtk::Orientation::Horizontal,
@@ -289,6 +302,9 @@ impl SimpleComponent for AppModel {
                     }
                 },
                 gtk::Box {
+                    #[watch]
+                    set_sensitive: model.sensitive,
+
                     set_spacing: 5,
                     set_margin_all: 5,
                     set_orientation: gtk::Orientation::Horizontal,
@@ -302,21 +318,9 @@ impl SimpleComponent for AppModel {
                     }
                 },
 
-                // gtk::Box {
-                //     set_spacing: 5,
-                //     set_margin_all: 5,
-                //     set_orientation: gtk::Orientation::Horizontal,
-                //     gtk::Label {
-                //         set_label: "Path to the epub file (optional, for furigana),"
-                //     },
-                //     append = model.open_epub.widget(),
-                //     gtk::Label {
-                //         #[watch]
-                //         set_label: &model.epub_path.to_string_lossy()
-                //     }
-                // },
-
                 gtk::Box {
+                    #[watch]
+                    set_sensitive: model.sensitive,
                     set_spacing: 5,
                     set_margin_all: 5,
                     set_orientation: gtk::Orientation::Horizontal,
@@ -335,40 +339,14 @@ impl SimpleComponent for AppModel {
                             set_label: "Before (ms)"
                         }
                 },
-                gtk::Box {
-                    set_orientation: gtk::Orientation::Vertical,
-                    relm4::gtk::SpinButton::builder()
-                    .adjustment(&Adjustment::new(0.0, -500.0, 500.0, 1.0, 0.0, 0.0))
-                    .build(){
-                        connect_value_changed[sender] => move |x| {
-                            sender.input(AppInMsg::UpdateOffset(OffsetDirection::After, x.value()))
-                        }
-                    },
-                        gtk::Label {
-                            set_label: "After (ms)"
-                        }
-                    },
                 },
 
                 gtk::Box {
                     set_spacing: 5,
                     set_margin_all: 5,
                     set_orientation: gtk::Orientation::Horizontal,
-                    gtk::Label {
-                        set_label: "Number of threads (TODO)"
-                    },
-                    relm4::gtk::SpinButton::builder()
-                    .adjustment(&Adjustment::new(4.0, 0.0, 12.0, 1.0, 0.0, 0.0))
-                    .build(){
-                        connect_value_changed[sender] => move |x| {
-                            sender.input(AppInMsg::UpdateOffset(OffsetDirection::Before, x.value()))
-                    }},
-                },
-
-                gtk::Box {
-                    set_spacing: 5,
-                    set_margin_all: 5,
-                    set_orientation: gtk::Orientation::Horizontal,
+                        #[watch]
+                        set_sensitive: model.sensitive,
                     gtk::Label {
                         set_label: "Image:"
                     },
@@ -392,22 +370,25 @@ impl SimpleComponent for AppModel {
                         }
                     }
                     },
-                    append = &gtk::CheckButton {
-                        set_label: Some("From file"),
-                        set_group: Some(&group),
-                        set_active: false,
-                        connect_toggled[sender] => move |btn| {
-                        if btn.is_active() {
-                            sender.input(AppInMsg::SetImageMode(ImageMode::Custom));
-                        }
-                    }
-                    },
+                    // append = &gtk::CheckButton {
+                    //     set_sensitive: false,
+                    //     set_label: Some("From file"),
+                    //     set_group: Some(&group),
+                    //     set_active: false,
+                    //     connect_toggled[sender] => move |btn| {
+                    //     if btn.is_active() {
+                    //         sender.input(AppInMsg::SetImageMode(ImageMode::Custom));
+                    //     }
+                    // }
+                    // },
 
                 },
 
 
                 append = if model.show_button {
                     gtk::Button::with_label("Generate Deck !") {
+                        #[watch]
+                        set_sensitive: model.sensitive,
                         connect_clicked[sender] => move |_| {
                             sender.input(AppInMsg::Start);
                         }

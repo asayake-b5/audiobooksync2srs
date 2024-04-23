@@ -12,6 +12,7 @@ use std::{
         Arc,
     },
 };
+use itertools::Itertools;
 
 const CHUNK_SIZE: usize = 25;
 const SILENCE: &[u8] = include_bytes!("../silence.mp3");
@@ -161,18 +162,26 @@ pub fn process(args: MyArgs, thread_tx: Sender<String>) {
 
     // Collect all subtitle text into a string.
     let mut subs_strings: Vec<String> = Vec::with_capacity(15000);
-    subs.iter_mut().for_each(|s| {
-        if s.start_time > mintime {
-            s.start_time.add_milliseconds(args.start_offset);
+    let mut subs2: Vec<Subtitle> = Vec::with_capacity(20000);
+    subs.iter().tuple_windows().for_each(|(n, np1)| {
+        let mut n2 = n.clone();
+        if n.start_time > mintime {
+            n2.start_time.add_milliseconds(args.start_offset);
         }
-        s.end_time.add_milliseconds(args.end_offset);
-        subs_strings.push(s.text.to_owned());
+        n2.end_time = np1.start_time;
+        n2.end_time.add_milliseconds(args.start_offset);
+        subs2.push(n2);
+        subs_strings.push(n.text.to_owned());
     });
+
+    subs2.push(subs.last().unwrap().clone());
+    subs_strings.push(subs.last().unwrap().text.to_owned());
+
 
     let n = AtomicUsize::new(0);
     let m = subs.len();
     // TODO benchmark, audiobook2srs don't care about order
-    subs.chunks(CHUNK_SIZE)
+    subs2.chunks(CHUNK_SIZE)
         .enumerate()
         .par_bridge()
         // .par_chunks()

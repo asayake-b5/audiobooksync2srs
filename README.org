@@ -1,0 +1,16 @@
+* Audiobook To SRS
+
+Turn your m4b + srt into an anki deck.
+
+Faster than subs2srs by a factor of ~10 (truly 🚀ingfast) because of optimizations that stems from audiobooks not being anime.
+
+Will also give more reliable output (subitle end times are modified to move closer to the next line's start line, as some subs sometimes have 10s gaps in them).
+
+** How To Use
+[[https://www.asayake.xyz/posts/audiobooksync/][Everything you need is right here]]
+
+
+* TODO maybe one day
+  - thread number
+  - custom file
+  - batching

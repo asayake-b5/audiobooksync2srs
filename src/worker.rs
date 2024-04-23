@@ -7,10 +7,12 @@ use std::{
     thread,
     time::{SystemTime, UNIX_EPOCH},
 };
+use std::fmt::format;
 
 use genanki_rs::{Deck, Field, Model, Note, Package, Template};
 use regex::Regex;
 use relm4::{ComponentSender, Worker};
+use relm4::gtk::cairo::Path;
 use srtlib::Subtitles;
 
 use crate::{converter, AppInMsg, AudioExt};
@@ -20,7 +22,7 @@ pub struct AsyncHandler;
 #[derive(Debug)]
 pub enum AsyncHandlerInMsg {
     GenImage(PathBuf, String),
-    GenDeck(String, PathBuf),
+    GenDeck(String, PathBuf, bool),
     ConvertMP3(PathBuf),
     SplitAudio(converter::MyArgs, PathBuf),
 }
@@ -160,7 +162,7 @@ impl AsyncHandler {
                     if audio_ext == "m4b" {
                         let mut converted_path = path.clone();
                         converted_path.set_extension("mp3");
-                        let _ = fs::remove_file(&converted_path);
+                        // let _ = fs::remove_file(&converted_path);
                     }
                     AsyncHandler::update_buffer("Extracting done!", false, sender);
                     break;
@@ -171,11 +173,11 @@ impl AsyncHandler {
         }
     }
 
-    fn gen_deck(&self, prefix: &str, srt_path: PathBuf, sender: &ComponentSender<AsyncHandler>) {
+    fn gen_deck(&self, prefix: &str, srt_path: PathBuf, img: bool, sender: &ComponentSender<AsyncHandler>) {
         AsyncHandler::update_buffer("Converting to apkg...", false, sender);
         let model = Model::new(
-            170655988708,
-            "audiobook2srs",
+            170655988728,
+            "audiobook to srs",
             vec![
                 Field::new("Audio"),
                 Field::new("Image"),
@@ -183,7 +185,7 @@ impl AsyncHandler {
             ],
             vec![Template::new("Card 1")
                 .qfmt("{{Sentence}}")
-                .afmt(r#"{{FrontSide}}<hr id="answer">{{Audio}} {Image}"#)],
+                .afmt(r#"{{FrontSide}}<hr id="answer">{{Audio}} {{Image}}"#)],
         );
         let now = SystemTime::now();
         let timestamp = now.duration_since(UNIX_EPOCH).unwrap().as_millis();
@@ -203,6 +205,11 @@ impl AsyncHandler {
         let mut files: Vec<String> = Vec::with_capacity(subs.len() + 100);
 
         // subs.sort();
+        let img_string = if img {
+            format!("<img src=\"{}.jpg\">", prefix)
+        } else {
+            String::from("")
+        };
 
         for sub in subs {
             files.push(format!("./gen/{}/{}-{}.mp3", prefix, prefix, sub.num - 1));
@@ -211,25 +218,32 @@ impl AsyncHandler {
                     model.clone(),
                     vec![
                         &format!("[sound:{}-{}.mp3]", prefix, sub.num - 1),
-                        &format!("<img src=\"{}.jpg\">", prefix),
+                        &img_string,
                         &sub.text,
                     ],
                 )
-                .unwrap(),
+                    .unwrap(),
             );
         }
 
         let mut files2: Vec<&str> = files.iter().map(|s| &**s).collect();
         let cover = format!("{}.jpg", prefix);
-        files2.push(&cover);
+        if img {
+            files2.push(&cover);
+        }
 
         let mut package = Package::new(vec![deck], files2).unwrap();
         package.write_to_file(&format!("{}.apkg", prefix)).unwrap();
         AsyncHandler::update_buffer("Conversion to apkg done!!\n", true, sender);
         AsyncHandler::update_buffer("Cleaning up..", false, sender);
         let _ = fs::remove_dir_all(format!("./gen/{}", prefix));
-        let _ = fs::remove_file(&cover);
+        if img {
+            let _ = fs::remove_file(&cover);
+        }
         AsyncHandler::update_buffer("..Done!", false, sender);
+        sender
+            .output(AppInMsg::Ended)
+            .unwrap();
     }
 }
 
@@ -248,7 +262,7 @@ impl Worker for AsyncHandler {
                 self.gen_image(path, &prefix, &sender);
                 sender.output(AppInMsg::StartConversion).unwrap();
             }
-            AsyncHandlerInMsg::GenDeck(prefix, path) => self.gen_deck(&prefix, path, &sender),
+            AsyncHandlerInMsg::GenDeck(prefix, path, img) => self.gen_deck(&prefix, path, img, &sender),
             AsyncHandlerInMsg::SplitAudio(args, path) => {
                 self.split_audio(args, path, &sender);
                 sender.output(AppInMsg::StartGenDeck).unwrap();
